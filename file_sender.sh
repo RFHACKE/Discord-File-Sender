@@ -36,7 +36,7 @@ send_file_to_discord() {
   # Input validation
   if is_empty "$WEBHOOK_URL"
   then
-    echo "Error: WEBHOOK_URL is not set.  Please edit the script to include your webhook URL."
+    echo "Error: WEBHOOK_URL is not set.  Please provide it using the -h flag"
     return 1
   fi
 
@@ -82,7 +82,7 @@ send_file_to_discord() {
 # --- Main Script ---
 
 # Parse command-line flags
-while getopts "f:n:m:" opt
+while getopts "f:n:m:h:" opt
 do
   case "$opt" in
     f)
@@ -94,14 +94,17 @@ do
     m)
       MESSAGE="$OPTARG"
       ;;
+    h)
+      WEBHOOK_URL="$OPTARG"
+      ;;
     \?)
       echo "Invalid option: -$OPTARG" >&2
-      echo "Usage: $0 -f <file_path> [-n <filename>] [-m <message>]" >&2
+      echo "Usage: $0 -f <file_path> [-n <filename>] [-m <message>] [-h <webhook url>]" >&2
       exit 1
       ;;
     :)
       echo "Option -$OPTARG requires an argument." >&2
-      echo "Usage: $0 -f <file_path> [-n <filename>] [-m <message>]" >&2
+      echo "Usage: $0 -f <file_path> [-n <filename>] [-m <message>] [-h <webhook url>]" >&2
       exit 1
       ;;
   esac
@@ -111,7 +114,7 @@ done
 if is_empty "$FILE_PATH"
 then
   echo "Error: You must specify the file path using the -f flag." >&2
-  echo "Usage: $0 -f <file_path> [-n <filename>] [-m <message>]" >&2
+  echo "Usage: $0 -f <file_path> [-n <filename>] [-m <message>] [-h <webhook url>] " >&2
   exit 1
 fi
 

@@ -42,7 +42,7 @@ while getopts "u:w:s:h:" opt; do
         *)
             usage
             ;;
-    esolac
+    esac
 done
 shift $((OPTIND-1))
 

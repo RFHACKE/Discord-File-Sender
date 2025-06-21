@@ -4,7 +4,8 @@
 URL_FILE=""
 WORDLIST="" # Example: /usr/share/wordlists/dirb/common.txt
 Session=""
-hook=""
+token=""
+c_id=""
 # Define the output directory for ffuf results
 # A subdirectory will be created for each URL's results
 OUTPUT_DIR="ffuf_results"
@@ -20,12 +21,13 @@ usage() {
     echo "  -u <url_file>       Path to the file containing URLs (one URL per line)."
     echo "  -w <wordlist_file>  Path to the wordlist file."
     echo "  -s <tmux_session>   Name of the current tmux session."
-    echo "  -h <web_hook>       Web hook url."
+    echo "  -t <token>          telegram token."
+    echo "  -c <id>             telegram chat id."
     exit 1
 }
 
 # Parse command-line arguments
-while getopts "u:w:s:h:" opt; do
+while getopts "u:w:s:t:c:" opt; do
     case "$opt" in
         u)
             URL_FILE="$OPTARG"
@@ -36,8 +38,11 @@ while getopts "u:w:s:h:" opt; do
         s)
             Session="$OPTARG"
             ;;
-        h)
-            hook="$OPTARG"
+        t)
+            token="$OPTARG"
+            ;;
+        c)
+            c_id="$OPTARG"
             ;;
         *)
             usage
@@ -68,7 +73,7 @@ error_handler() {
         [ -f "$CURRENT_DEBUG_LOG" ] && files_to_send+=("$CURRENT_DEBUG_LOG")
         [ -f "$ERROR_LOG" ] && files_to_send+=("$ERROR_LOG")
 
-        file_sender.sh -f "${files_to_send[@]}" -n "FFuF_Error_$(date +%Y%m%d%H%M%S)" -m "FFuF Scan Error on $failed_url in session $Session" -h "$hook"
+        file_sender.sh -f "${files_to_send[@]}" -m "FFuF_Error_$(date +%Y%m%d%H%M%S) FFuF Scan Error on $failed_url in session $Session" -t "$token" -c "$c_id"
         rm -f "$temp_error_file" # Clean up temp file
     else
         echo "Warning: file_sender.sh not found. Could not send error notification." | tee -a "$ERROR_LOG"
@@ -78,7 +83,7 @@ error_handler() {
     # If a critical step outside the loop (like splitting) fails, 'set -e' will handle the exit.
 }
 
-# Trap the ERR signal. This means if any command fails, the error_handler function is called.
+# Trap the ERR signal. This means if any command fails, the error_handlerfunction is called.
 # We're passing $LINENO to the trap function so we know which line caused the error.
 trap 'error_handler $LINENO' ERR
 
@@ -163,9 +168,9 @@ while IFS= read -r url; do
             continue
         fi
 
-        local part_name=$(basename "$split_wordlist_file" .txt) # e.g., part_01
-        local part_output_file="${OUTPUT_DIR}/${sanitized_url}_${part_name}.json"
-        local part_debug_log="${OUTPUT_DIR}/${sanitized_url}_${part_name}_debug.log"
+        part_name=$(basename "$split_wordlist_file" .txt) # e.g., part_01
+        part_output_file="${OUTPUT_DIR}/${sanitized_url}_${part_name}.json"
+        part_debug_log="${OUTPUT_DIR}/${sanitized_url}_${part_name}_debug.log"
 
         echo "  - Using wordlist part: $split_wordlist_file"
         echo "  - Outputting temporary results to: $part_output_file"
@@ -219,7 +224,7 @@ while IFS= read -r url; do
             echo "Combined results saved to ${FINAL_COMBINED_OUTPUT_FILE}"
             # Send combined file notification
             if command -v file_sender.sh &> /dev/null; then
-                file_sender.sh -f "$FINAL_COMBINED_OUTPUT_FILE" -n "${sanitized_url}_combined_ffuf_results" -m "Fuzzing Results for $sanitized_url in session $Session" -h "$hook"
+                file_sender.sh -f "$FINAL_COMBINED_OUTPUT_FILE"  -m "Fuzzing Results for $sanitized_url in session $Session" -t "$token" -c "$c_id"
             else
                 echo "Warning: file_sender.sh not found. Skipping combined results notification for $url."
             fi

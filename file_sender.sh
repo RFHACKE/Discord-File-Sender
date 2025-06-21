@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script to send a file as an attachment to a Discord webhook
+# Script to send a file as an attachment to a Telegram chat using Bot API
 # This version takes input via command-line flags
 
 # Check if required tools are installed
@@ -10,14 +10,17 @@ then
     exit 1
 fi
 
-# --- Configuration ---
-WEBHOOK_URL=""  # Replace with your Discord webhook URL - VERY IMPORTANT
+# --- Configuration (These can also be passed via flags) ---
+TELEGRAM_BOT_TOKEN=""  # Replace with your Telegram Bot API Token (from @BotFather) - VERY IMPORTANT
+TELEGRAM_CHAT_ID=""    # Replace with your Telegram Chat ID (your personal ID or group ID) - VERY IMPORTANT
 # --- Configuration ---
 
 # --- Input Variables (from flags) ---
 FILE_PATH=""
-FILENAME="recon.txt"
-MESSAGE="File attached:" # Default message
+# FILENAME is not strictly needed for Telegram sendDocument as it uses the original filename by default
+# unless you specifically rename it with the 'filename' parameter in the form-data.
+# For simplicity, we'll let Telegram use the original filename from FILE_PATH.
+MESSAGE="File attached:" # Default message (will be the caption for the file)
 
 # --- Helper Functions ---
 
@@ -31,18 +34,24 @@ file_exists() {
   [ -f "$1" ]
 }
 
-# Function to send the file to Discord
-send_file_to_discord() {
+# Function to send the file to Telegram
+send_file_to_telegram() {
   # Input validation
-  if is_empty "$WEBHOOK_URL"
+  if is_empty "$TELEGRAM_BOT_TOKEN"
   then
-    echo "Error: WEBHOOK_URL is not set.  Please provide it using the -h flag"
+    echo "Error: TELEGRAM_BOT_TOKEN is not set. Please provide it using the -t flag."
+    return 1
+  fi
+
+  if is_empty "$TELEGRAM_CHAT_ID"
+  then
+    echo "Error: TELEGRAM_CHAT_ID is not set. Please provide it using the -c flag."
     return 1
   fi
 
   if is_empty "$FILE_PATH"
   then
-    echo "Error: FILE_PATH is not set.  Use the -f flag to specify the file."
+    echo "Error: FILE_PATH is not set. Use the -f flag to specify the file."
     return 1
   fi
 
@@ -52,29 +61,28 @@ send_file_to_discord() {
     return 1
   fi
 
-  # Use a default filename if FILENAME is empty
-  if is_empty "$FILENAME"
-  then
-    FILENAME=$(basename "$FILE_PATH")
-  fi
+  # Determine the base filename for the attachment
+  local base_filename=$(basename "$FILE_PATH")
 
-  # Prepare the curl command
+  # Prepare the curl command for sending a document
+  # Telegram's sendDocument method includes a 'caption' for the message.
+  # The 'parse_mode=MarkdownV2' allows for basic formatting in the caption.
   curl_command=(
-    curl
-    -X POST
-    -H "Content-Type: multipart/form-data"
-    -F "payload_json={\"content\":\"$MESSAGE\"}"
-    -F "file=@$FILE_PATH;filename=$FILENAME"
-    "$WEBHOOK_URL"
+    curl -s -X POST
+    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument"
+    -F "chat_id=${TELEGRAM_CHAT_ID}"
+    -F "document=@${FILE_PATH}"
+    -F "caption=${MESSAGE}"
   )
 
   # Execute the curl command
+  echo "Attempting to send file '$base_filename' to Telegram..."
   if ! "${curl_command[@]}"
   then
-    echo "Error: Failed to send file to Discord."
+    echo "Error: Failed to send file to Telegram."
     return 1
   else
-    echo "File sent successfully to Discord."
+    echo "File sent successfully to Telegram."
     return 0
   fi
 }
@@ -82,43 +90,43 @@ send_file_to_discord() {
 # --- Main Script ---
 
 # Parse command-line flags
-while getopts "f:n:m:h:" opt
+while getopts "f:m:t:c:" opt # Removed 'n' and 'h' flags
 do
   case "$opt" in
     f)
       FILE_PATH="$OPTARG"
       ;;
-    n)
-      FILENAME="$OPTARG"
-      ;;
     m)
       MESSAGE="$OPTARG"
       ;;
-    h)
-      WEBHOOK_URL="$OPTARG"
+    t)
+      TELEGRAM_BOT_TOKEN="$OPTARG"
+      ;;
+    c)
+      TELEGRAM_CHAT_ID="$OPTARG"
       ;;
     \?)
       echo "Invalid option: -$OPTARG" >&2
-      echo "Usage: $0 -f <file_path> [-n <filename>] [-m <message>] [-h <webhook url>]" >&2
+      echo "Usage: $0 -f <file_path> [-m <message>] -t <bot_token> -c <chat_id>" >&2
       exit 1
       ;;
     :)
       echo "Option -$OPTARG requires an argument." >&2
-      echo "Usage: $0 -f <file_path> [-n <filename>] [-m <message>] [-h <webhook url>]" >&2
+      echo "Usage: $0 -f <file_path> [-m <message>] -t <bot_token> -c <chat_id>" >&2
       exit 1
       ;;
   esac
 done
 
-# Check for the presence of the mandatory -f flag
-if is_empty "$FILE_PATH"
+# Check for the presence of mandatory flags
+if is_empty "$FILE_PATH" || is_empty "$TELEGRAM_BOT_TOKEN" || is_empty "$TELEGRAM_CHAT_ID"
 then
-  echo "Error: You must specify the file path using the -f flag." >&2
-  echo "Usage: $0 -f <file_path> [-n <filename>] [-m <message>] [-h <webhook url>] " >&2
+  echo "Error: You must specify FILE_PATH (-f), BOT_TOKEN (-t), and CHAT_ID (-c)." >&2
+  echo "Usage: $0 -f <file_path> [-m <message>] -t <bot_token> -c <chat_id>" >&2
   exit 1
 fi
 
 # Send the file
-send_file_to_discord
+send_file_to_telegram
 
 exit $?

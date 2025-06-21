@@ -206,7 +206,7 @@ while IFS= read -r url; do
         }
 
         # Wrap the combined array into the final FFuF JSON structure
-        jq -n --argfile combined_results "$temp_combined_array_file" '{ "results": $combined_results }' > "$FINAL_COMBINED_OUTPUT_FILE" || {
+        jq -n --slurpfile combined_results "$temp_combined_array_file" '{ "results": $combined_results }' > "$FINAL_COMBINED_OUTPUT_FILE" || {
             echo "Error: Failed to wrap combined JSON array for $url using jq." | tee -a "$ERROR_LOG"
             error_handler $LINENO # Call error handler for wrapping failure
             rm -f "$temp_combined_array_file" # Clean up temp

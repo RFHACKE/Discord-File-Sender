@@ -194,7 +194,7 @@ while IFS= read -r url; do
         # Then wrap the combined array in a new JSON object with a "results" key.
         
         # Create a temporary file to hold the combined results array
-        local temp_combined_array_file="${FINAL_COMBINED_OUTPUT_FILE}.tmp_array"
+        temp_combined_array_file="${FINAL_COMBINED_OUTPUT_FILE}.tmp_array"
 
         # Extract all 'results' arrays and concatenate them into a single JSON array
         # This uses 'map(.results[])' to flatten all 'results' arrays from input files into one

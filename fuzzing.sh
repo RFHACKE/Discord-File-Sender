@@ -6,8 +6,8 @@ WORDLIST="" # Example: /usr/share/wordlists/dirb/common.txt
 Session=""
 token=""
 c_id=""
-# Define the output directory for ffuf results
-# A subdirectory will be created for each URL's results
+
+# Define the main output directory for ffuf results
 OUTPUT_DIR="ffuf_results"
 ERROR_LOG="ffuf_error.log" # Dedicated log file for errors
 
@@ -69,7 +69,6 @@ error_handler() {
         echo "$error_message" > "$temp_error_file"
         # Include current URL file, debug log, and error log if they exist
         local files_to_send=("$temp_error_file")
-        # Ensure these variables are set for the error handler if needed, currently they're in the loop scope.
         # Adding checks to see if they exist before adding
         [ -f "$part_output_file" ] && files_to_send+=("$part_output_file")
         [ -f "$part_debug_log" ] && files_to_send+=("$part_debug_log")
@@ -155,12 +154,19 @@ while IFS= read -r url; do
     echo "Scanning: $url"
     echo "--------------------------------------------------"
     
-    # Sanitize the URL to create a valid filename for output
-    # Using POSIX character classes for broader compatibility
-    sanitized_url=$(echo "$url" | sed -e 's/[^[:alnum:]._[:space:]-]/_/g' -e 's/^-//' -e 's/-$//' | tr -s '_') # Replaces non-alphanumeric/dot/underscore/space/dash with _, then squeezes multiple underscores
+    # Sanitize the URL to create a valid filename for output directory and files
+    # Remove http(s):// for the folder name
+    sanitized_url_for_dir=$(echo "$url" | sed -e 's|^https\{0,1\}://||' -e 's/[^a-zA-Z0-9._-]/_/g' -e 's/^-//' -e 's/-$//' | tr -s '_')
     
+    # Create the URL-specific subdirectory for this URL's ffuf results
+    URL_OUTPUT_SUBDIR="${OUTPUT_DIR}/${sanitized_url_for_dir}"
+    mkdir -p "$URL_OUTPUT_SUBDIR" || {
+        echo "Error: Could not create URL specific directory '$URL_OUTPUT_SUBDIR'. Skipping URL: $url" | tee -a "$ERROR_LOG"
+        continue
+    }
+
     # Define the final combined output file for this URL
-    FINAL_COMBINED_OUTPUT_FILE="${OUTPUT_DIR}/${sanitized_url}_combined.json"
+    FINAL_COMBINED_OUTPUT_FILE="${URL_OUTPUT_SUBDIR}/${sanitized_url_for_dir}_combined.json"
     
     # Array to hold paths of successful temporary JSON part files for this URL
     declare -a json_part_files_for_url
@@ -173,8 +179,9 @@ while IFS= read -r url; do
         fi
 
         part_name=$(basename "$split_wordlist_file" .txt) # e.g., part_01
-        part_output_file="${OUTPUT_DIR}/${sanitized_url}_${part_name}.json"
-        part_debug_log="${OUTPUT_DIR}/${sanitized_url}_${part_name}_debug.log"
+        # Store part output files in the URL-specific subdirectory
+        part_output_file="${URL_OUTPUT_SUBDIR}/${sanitized_url_for_dir}_${part_name}.json"
+        part_debug_log="${URL_OUTPUT_SUBDIR}/${sanitized_url_for_dir}_${part_name}_debug.log"
 
         echo "  - Using wordlist part: $split_wordlist_file"
         echo "  - Outputting temporary results to: $part_output_file"
@@ -183,12 +190,11 @@ while IFS= read -r url; do
         # Use -mc to filter the JSON output itself, reducing file size significantly.
         # This is crucial for avoiding the 953MB issue if ffuf is outputting all requests.
         set +e
-        ffuf -u "${url}/FUZZ" -w "$split_wordlist_file" -o "$part_output_file" -of json \
-             -debug-log "$part_debug_log" -v \
-             -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36' \
-             -mc 200,301,302,307,401,403,405,500 # Explicitly match these codes for JSON output
-             # You can add -sf here if you want to stop on first finding, but it might reduce overall coverage.
-             # If you're encountering many 403s like in your example, you might want to remove -sf if it stops on the first 403.
+        
+        ffuf -u "${url}/FUZZ" -w "$split_wordlist_file" -o "$part_output_file" -of json  -debug-log "$part_debug_log" -s -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36' -ac
+             # Filter out results with exactly 1 line (common for empty/default pages)
+             # Removed -ac as explicit -mc and -fl provide more control for JSON output.
+             # Removed -sf to allow full wordlist part processing, unless you explicitly want to stop on first hit.
         ffuf_exit_status=$?
         set -e # Re-enable set -e after ffuf
 
@@ -211,29 +217,21 @@ while IFS= read -r url; do
     echo "Combining results for $url..."
 
     # --- Step 3: Combine JSON outputs using jq ---
+    # Now, jq will operate on files specifically within the URL_OUTPUT_SUBDIR
     if [ ${#json_part_files_for_url[@]} -gt 0 ]; then
-        # Use jq to read each JSON file, extract its .results array, and combine them.
-        # Then wrap the combined array in a new JSON object with a "results" key.
-        
-        # Create a temporary file to hold the combined results array
-        temp_combined_array_file="${FINAL_COMBINED_OUTPUT_FILE}.tmp_array"
-
-        # Extract all 'results' arrays and concatenate them into a single JSON array
-        # Using the requested 'map(.results) | add' pattern.
-        jq -s '{results: map(.results) | add}' "${json_part_files_for_url[@]}" > "$FINAL_COMBINED_OUTPUT_FILE" || {
-            echo "Error: Failed to combine JSON arrays for $url using jq." | tee -a "$ERROR_LOG"
+        # Using the requested 'map(.results) | add' pattern, and sourcing from the new subdirectory.
+        # Ensure that this glob pattern only picks up the valid part_*.json files within the current URL's directory.
+        jq -s '{results: map(.results) | add}' "${URL_OUTPUT_SUBDIR}"/*_part_*.json > "$FINAL_COMBINED_OUTPUT_FILE" || {
+            echo "Error: Failed to combine JSON arrays for $url using jq from '$URL_OUTPUT_SUBDIR'." | tee -a "$ERROR_LOG"
             error_handler $LINENO # Call error handler for combination failure
-            # Don't clean up temp_combined_array_file if not used in this specific jq command
             continue # Move to next URL
         }
-        
-        # No need for temp_combined_array_file clean up, as the previous jq command directly outputs
         
         if [ $? -eq 0 ]; then
             echo "Combined results saved to ${FINAL_COMBINED_OUTPUT_FILE}"
             # Send combined file notification
             if command -v file_sender.sh &> /dev/null; then
-                file_sender.sh -f "$FINAL_COMBINED_OUTPUT_FILE" -m "Fuzzing Results for $sanitized_url in session $Session" -t "$token" -c "$c_id"
+                file_sender.sh -f "$FINAL_COMBINED_OUTPUT_FILE" -m "Fuzzing Results for $sanitized_url_for_dir in session $Session" -t "$token" -c "$c_id"
             else
                 echo "Warning: file_sender.sh not found. Skipping combined results notification for $url."
             fi
@@ -244,8 +242,9 @@ while IFS= read -r url; do
 
     # Clean up individual part JSON files and debug logs for this URL to save space
     echo "Cleaning up temporary individual JSON part files and logs for $url..."
-    rm -f "${OUTPUT_DIR}/${sanitized_url}_part_*.json"
-    rm -f "${OUTPUT_DIR}/${sanitized_url}_part_*.log"
+    # The files are now in URL_OUTPUT_SUBDIR, so delete from there
+    rm -f "${URL_OUTPUT_SUBDIR}"/*_part_*.json
+    rm -f "${URL_OUTPUT_SUBDIR}"/*_part_*.log
 
 done < "$URL_FILE"
 

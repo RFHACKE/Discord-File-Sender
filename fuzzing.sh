@@ -17,7 +17,7 @@ SPLIT_WORDLIST_DIR="$OUTPUT_DIR/wordlist_parts_$(date +%s)" # Unique temp dir fo
 # --- Argument Parsing ---
 # Usage function
 usage() {
-    echo "Usage: $0 -u <url_file> -w <wordlist_file> [-s <tmux_session>] [-h <web_hook>]"
+    echo "Usage: $0 -u <url_file> -w <wordlist_file> [-s <tmux_session>] [-t <telegram_token>] [-c <telegram_chat_id>]"
     echo "  -u <url_file>       Path to the file containing URLs (one URL per line)."
     echo "  -w <wordlist_file>  Path to the wordlist file."
     echo "  -s <tmux_session>   Name of the current tmux session."
@@ -69,8 +69,10 @@ error_handler() {
         echo "$error_message" > "$temp_error_file"
         # Include current URL file, debug log, and error log if they exist
         local files_to_send=("$temp_error_file")
-        [ -f "$CURRENT_OUTPUT_FILE" ] && files_to_send+=("$CURRENT_OUTPUT_FILE") # If an output file exists for the failed step
-        [ -f "$CURRENT_DEBUG_LOG" ] && files_to_send+=("$CURRENT_DEBUG_LOG")
+        # Ensure these variables are set for the error handler if needed, currently they're in the loop scope.
+        # Adding checks to see if they exist before adding
+        [ -f "$part_output_file" ] && files_to_send+=("$part_output_file")
+        [ -f "$part_debug_log" ] && files_to_send+=("$part_debug_log")
         [ -f "$ERROR_LOG" ] && files_to_send+=("$ERROR_LOG")
 
         file_sender.sh -f "${files_to_send[@]}" -m "FFuF_Error_$(date +%Y%m%d%H%M%S) FFuF Scan Error on $failed_url in session $Session" -t "$token" -c "$c_id"
@@ -83,7 +85,7 @@ error_handler() {
     # If a critical step outside the loop (like splitting) fails, 'set -e' will handle the exit.
 }
 
-# Trap the ERR signal. This means if any command fails, the error_handlerfunction is called.
+# Trap the ERR signal. This means if any command fails, the error_handler function is called.
 # We're passing $LINENO to the trap function so we know which line caused the error.
 trap 'error_handler $LINENO' ERR
 
@@ -100,7 +102,8 @@ if [ ! -f "$URL_FILE" ]; then
     echo "Error: URL file '$URL_FILE' not found."
     usage
 fi
-dos2unix "$URL_FILE"
+# Convert DOS line endings to Unix line endings
+dos2unix "$URL_FILE" 2>/dev/null || { echo "Warning: dos2unix not found or failed. Proceeding without conversion." | tee -a "$ERROR_LOG"; }
 
 # Check if the wordlist exists
 if [ ! -f "$WORDLIST" ]; then
@@ -153,7 +156,8 @@ while IFS= read -r url; do
     echo "--------------------------------------------------"
     
     # Sanitize the URL to create a valid filename for output
-    sanitized_url=$(echo "$url" | sed -e 's/[^a-zA-Z0-9._-]/_/g' -e 's/^-//' -e 's/-$//')
+    # Using POSIX character classes for broader compatibility
+    sanitized_url=$(echo "$url" | sed -e 's/[^[:alnum:]._[:space:]-]/_/g' -e 's/^-//' -e 's/-$//' | tr -s '_') # Replaces non-alphanumeric/dot/underscore/space/dash with _, then squeezes multiple underscores
     
     # Define the final combined output file for this URL
     FINAL_COMBINED_OUTPUT_FILE="${OUTPUT_DIR}/${sanitized_url}_combined.json"
@@ -176,14 +180,27 @@ while IFS= read -r url; do
         echo "  - Outputting temporary results to: $part_output_file"
 
         # Disable 'set -e' specifically for the ffuf command within the loop
+        # Use -mc to filter the JSON output itself, reducing file size significantly.
+        # This is crucial for avoiding the 953MB issue if ffuf is outputting all requests.
         set +e
-        ffuf -u "${url}/FUZZ" -w "$split_wordlist_file" -o "$part_output_file" -of json -ac -debug-log "$part_debug_log" -sf -v -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
+        ffuf -u "${url}/FUZZ" -w "$split_wordlist_file" -o "$part_output_file" -of json \
+             -debug-log "$part_debug_log" -v \
+             -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36' \
+             -mc 200,301,302,307,401,403,405,500 # Explicitly match these codes for JSON output
+             # You can add -sf here if you want to stop on first finding, but it might reduce overall coverage.
+             # If you're encountering many 403s like in your example, you might want to remove -sf if it stops on the first 403.
         ffuf_exit_status=$?
         set -e # Re-enable set -e after ffuf
 
         if [ $ffuf_exit_status -eq 0 ]; then
             echo "  FFuF scan for $url with $part_name completed successfully."
-            json_part_files_for_url+=("$part_output_file") # Add to array for merging
+            # Only add the file to the list for merging if it actually produced a valid JSON output
+            # with results (optional: check if 'results' array is not empty)
+            if [ -s "$part_output_file" ] && jq -e 'has("results")' "$part_output_file" >/dev/null; then
+                 json_part_files_for_url+=("$part_output_file") # Add to array for merging
+            else
+                 echo "  FFuF output for $url with $part_name was empty or malformed. Not adding to merge list." | tee -a "$ERROR_LOG"
+            fi
         else
             echo "  FFuF scan for $url with $part_name encountered an error (Exit Code: $ffuf_exit_status)."
             error_handler $LINENO # Manually call the error handler for this ffuf specific error
@@ -202,29 +219,21 @@ while IFS= read -r url; do
         temp_combined_array_file="${FINAL_COMBINED_OUTPUT_FILE}.tmp_array"
 
         # Extract all 'results' arrays and concatenate them into a single JSON array
-        # This uses 'map(.results[])' to flatten all 'results' arrays from input files into one
-        jq -s 'map(.results[])' "${json_part_files_for_url[@]}" > "$temp_combined_array_file" || {
+        # Using the requested 'map(.results) | add' pattern.
+        jq -s '{results: map(.results) | add}' "${json_part_files_for_url[@]}" > "$FINAL_COMBINED_OUTPUT_FILE" || {
             echo "Error: Failed to combine JSON arrays for $url using jq." | tee -a "$ERROR_LOG"
             error_handler $LINENO # Call error handler for combination failure
-            rm -f "$temp_combined_array_file" # Clean up temp
-            continue # Move to next URL
-        }
-
-        # Wrap the combined array into the final FFuF JSON structure
-        jq -n --slurpfile combined_results "$temp_combined_array_file" '{ "results": $combined_results }' > "$FINAL_COMBINED_OUTPUT_FILE" || {
-            echo "Error: Failed to wrap combined JSON array for $url using jq." | tee -a "$ERROR_LOG"
-            error_handler $LINENO # Call error handler for wrapping failure
-            rm -f "$temp_combined_array_file" # Clean up temp
+            # Don't clean up temp_combined_array_file if not used in this specific jq command
             continue # Move to next URL
         }
         
-        rm -f "$temp_combined_array_file" # Clean up temporary combined array file
+        # No need for temp_combined_array_file clean up, as the previous jq command directly outputs
         
         if [ $? -eq 0 ]; then
             echo "Combined results saved to ${FINAL_COMBINED_OUTPUT_FILE}"
             # Send combined file notification
             if command -v file_sender.sh &> /dev/null; then
-                file_sender.sh -f "$FINAL_COMBINED_OUTPUT_FILE"  -m "Fuzzing Results for $sanitized_url in session $Session" -t "$token" -c "$c_id"
+                file_sender.sh -f "$FINAL_COMBINED_OUTPUT_FILE" -m "Fuzzing Results for $sanitized_url in session $Session" -t "$token" -c "$c_id"
             else
                 echo "Warning: file_sender.sh not found. Skipping combined results notification for $url."
             fi
